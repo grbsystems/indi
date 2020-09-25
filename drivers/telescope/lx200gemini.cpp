@@ -133,6 +133,11 @@ bool LX200Gemini::initProperties()
     IUFillSwitch(&TrackModeS[GEMINI_TRACK_LUNAR], "TRACK_LUNAR", "Lunar", ISS_OFF);
     IUFillSwitch(&TrackModeS[GEMINI_TRACK_SOLAR], "TRACK_SOLAR", "Solar", ISS_OFF);
 
+    IUFillSwitch(&SyncDoesAddAlignS[SYNC_DOES_SYNC], "SYNC", "Sync", ISS_ON);
+    IUFillSwitch(&SyncDoesAddAlignS[SYNC_DOES_ADD_ALIGN], "ADDALIGN", "Addl Align", ISS_OFF);
+    IUFillSwitchVector(&SyncDoesAddAlignSP, SyncDoesAddAlignS, 2, getDeviceName(), "SYNC_SETTINGS", "Sync Settings",
+                       MAIN_CONTROL_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
+
     return true;
 }
 
@@ -179,9 +184,10 @@ bool LX200Gemini::updateProperties()
             defineNumber(&CenteringSpeedNP);
         }
 
+        defineSwitch(&SyncDoesAddAlignSP);
+
         updateParkingState();
         updateMovementState();
-
     }
     else
     {
@@ -191,6 +197,7 @@ bool LX200Gemini::updateProperties()
         deleteProperty(MoveSpeedNP.name);
         deleteProperty(GuidingSpeedNP.name);
         deleteProperty(CenteringSpeedNP.name);
+        deleteProperty(SyncDoesAddAlignSP.name);
     }
 
     return true;
@@ -215,6 +222,14 @@ bool LX200Gemini::ISNewSwitch(const char *dev, const char *name, ISState *states
             IUUpdateSwitch(&ParkSettingsSP, states, names, n);
             ParkSettingsSP.s = IPS_OK;
             IDSetSwitch(&ParkSettingsSP, nullptr);
+            return true;
+        }
+
+        if (!strcmp(name, SyncDoesAddAlignSP.name))
+        {
+            IUUpdateSwitch(&SyncDoesAddAlignSP, states, names, n);
+            SyncDoesAddAlignSP.s = IPS_OK;
+            IDSetSwitch(&SyncDoesAddAlignSP, nullptr);
             return true;
         }
     }
@@ -534,6 +549,82 @@ void LX200Gemini::syncSideOfPier()
     LOGF_DEBUG("RES: <%s>, lst %f, ha %f, pierSide %d", response, lst, ha, pointingState);
 
     setPierSide(pointingState);
+}
+
+bool LX200Gemini::Sync(double ra, double dec)
+{
+    int syncSetting = IUFindOnSwitchIndex(&SyncDoesAddAlignSP);
+
+    if(syncSetting == SYNC_DOES_SYNC) {
+        LOG_INFO("Sync not Addl Align");
+        return LX200Generic::Sync(ra, dec);
+    }
+
+    if (!isSimulation() && (setObjectRA(PortFD, ra) < 0 || (setObjectDEC(PortFD, dec)) < 0))
+    {
+        EqNP.s = IPS_ALERT;
+        IDSetNumber(&EqNP, "Error setting RA/DEC. Unable to Sync.");
+        return false;
+    }
+
+    if (!isSimulation() && AddAlign(PortFD) < 0)
+    {
+        EqNP.s = IPS_ALERT;
+        IDSetNumber(&EqNP, "Additional Align failed.");
+        return false;
+    }
+
+    currentRA  = ra;
+    currentDEC = dec;
+
+    LOG_INFO("Synchronization successful.");
+
+    EqNP.s     = IPS_OK;
+
+    NewRaDec(currentRA, currentDEC);
+
+    return true;
+}
+
+int LX200Gemini::AddAlign(int fd)
+{
+    LOG_DEBUG("Attempting Additional Align");
+
+    char cmd[6] = ":Cm#";
+    char response[64];
+    int rc = 0;
+    int nbytes_written = 0;
+    int nbytes_read = 0;
+
+    LOGF_DEBUG("CMD: <%s>", cmd);
+
+    tcflush(PortFD, TCIOFLUSH);
+    memset(response, 0, 64);
+
+    if ((rc = tty_write(PortFD, cmd, 5, &nbytes_written)) != TTY_OK)
+    {
+        char errmsg[256];
+        tty_error_msg(rc, errmsg, 256);
+        LOGF_ERROR("Error writing to device %s (%d)", errmsg, rc);
+        return false;
+    }
+
+    rc = tty_nread_section(fd, response, 64, '#', 5, &nbytes_read);
+    if (rc != TTY_OK)
+    {
+        char errmsg[256];
+        tty_error_msg(rc, errmsg, 256);
+        LOGF_ERROR("Error writing to device %s (%d)", errmsg, rc);
+        return false;
+    }
+
+    LOGF_DEBUG("VAL: <%s>", response);
+
+    tcflush(PortFD, TCIOFLUSH);
+
+    LOG_DEBUG("Additional Align Successful");
+
+    return 0;
 }
 
 bool LX200Gemini::Park()
@@ -879,7 +970,6 @@ bool LX200Gemini::SetTrackMode(uint8_t mode)
 
     snprintf(cmd, 16, "%s%c#", prefix, checksum);
 
-    LOG_ERROR("Setting track mode");
     LOGF_DEBUG("CMD: <%s>", cmd);
 
     if ((rc = tty_write_string(PortFD, cmd, &nbytes_written)) != TTY_OK)

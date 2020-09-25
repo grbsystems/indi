@@ -49,6 +49,8 @@ class LX200Gemini : public LX200Generic
         virtual bool isSlewComplete() override;
         virtual bool ReadScopeStatus() override;
 
+        virtual bool Sync(double ra, double dec) override;
+
         virtual bool Park()override ;
         virtual bool UnPark() override;
 
@@ -59,10 +61,13 @@ class LX200Gemini : public LX200Generic
 
         virtual bool saveConfigItems(FILE *fp) override;
 
+
     private:
         void syncSideOfPier();
         bool sleepMount();
         bool wakeupMount();
+
+        int AddAlign(int fd);
 
         bool getGeminiProperty(uint8_t propertyNumber, char* value);
         bool setGeminiProperty(uint8_t propertyNumber, char* value);
@@ -92,6 +97,14 @@ class LX200Gemini : public LX200Generic
             PARK_HOME,
             PARK_STARTUP,
             PARK_ZENITH
+        };
+
+        ISwitch SyncDoesAddAlignS[2];
+        ISwitchVectorProperty SyncDoesAddAlignSP;
+        enum
+        {
+            SYNC_DOES_SYNC,
+            SYNC_DOES_ADD_ALIGN
         };
 
         ISwitch StartupModeS[3];
