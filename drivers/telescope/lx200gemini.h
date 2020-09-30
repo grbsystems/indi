@@ -49,8 +49,6 @@ class LX200Gemini : public LX200Generic
         virtual bool isSlewComplete() override;
         virtual bool ReadScopeStatus() override;
 
-        virtual bool Sync(double ra, double dec) override;
-
         virtual bool Park()override ;
         virtual bool UnPark() override;
 
