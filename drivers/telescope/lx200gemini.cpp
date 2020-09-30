@@ -133,6 +133,11 @@ bool LX200Gemini::initProperties()
     IUFillSwitch(&TrackModeS[GEMINI_TRACK_LUNAR], "TRACK_LUNAR", "Lunar", ISS_OFF);
     IUFillSwitch(&TrackModeS[GEMINI_TRACK_SOLAR], "TRACK_SOLAR", "Solar", ISS_OFF);
 
+    IUFillSwitch(&SyncDoesAddAlignS[SYNC_DOES_SYNC], "SYNC", "Sync", ISS_ON);
+    IUFillSwitch(&SyncDoesAddAlignS[SYNC_DOES_ADD_ALIGN], "ADDALIGN", "Addl Align", ISS_OFF);
+    IUFillSwitchVector(&SyncDoesAddAlignSP, SyncDoesAddAlignS, 2, getDeviceName(), "SYNC_SETTINGS", "Sync Settings",
+                       MAIN_CONTROL_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
+
     return true;
 }
 
@@ -179,6 +184,8 @@ bool LX200Gemini::updateProperties()
             defineNumber(&CenteringSpeedNP);
         }
 
+        defineSwitch(&SyncDoesAddAlignSP);
+
         updateParkingState();
         updateMovementState();
     }
@@ -190,6 +197,7 @@ bool LX200Gemini::updateProperties()
         deleteProperty(MoveSpeedNP.name);
         deleteProperty(GuidingSpeedNP.name);
         deleteProperty(CenteringSpeedNP.name);
+        deleteProperty(SyncDoesAddAlignSP.name);
     }
 
     return true;
@@ -214,6 +222,14 @@ bool LX200Gemini::ISNewSwitch(const char *dev, const char *name, ISState *states
             IUUpdateSwitch(&ParkSettingsSP, states, names, n);
             ParkSettingsSP.s = IPS_OK;
             IDSetSwitch(&ParkSettingsSP, nullptr);
+            return true;
+        }
+
+        if (!strcmp(name, SyncDoesAddAlignSP.name))
+        {
+            IUUpdateSwitch(&SyncDoesAddAlignSP, states, names, n);
+            SyncDoesAddAlignSP.s = IPS_OK;
+            IDSetSwitch(&SyncDoesAddAlignSP, nullptr);
             return true;
         }
     }
@@ -450,7 +466,6 @@ bool LX200Gemini::ReadScopeStatus()
 
             EqNP.s = IPS_OK;
             IDSetNumber(&EqNP, NULL);
-
             LOG_INFO("Slew is complete. Tracking...");
         }
     }
@@ -546,7 +561,6 @@ void LX200Gemini::syncSideOfPier()
 
     setPierSide(pointingState);
 }
-
 
 bool LX200Gemini::Park()
 {
@@ -655,6 +669,8 @@ void LX200Gemini::setTrackState(INDI::Telescope::TelescopeStatus state)
 void LX200Gemini::updateMovementState()
 {
     LX200Gemini::MovementState movementState = getMovementState();
+
+    LOGF_DEBUG("Movement state <%d>", movementState);
 
     switch (movementState)
     {
