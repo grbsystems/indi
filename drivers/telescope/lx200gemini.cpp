@@ -562,6 +562,7 @@ void LX200Gemini::syncSideOfPier()
     setPierSide(pointingState);
 }
 
+
 bool LX200Gemini::Park()
 {
     char cmd[6] = ":hP#";
@@ -669,8 +670,6 @@ void LX200Gemini::setTrackState(INDI::Telescope::TelescopeStatus state)
 void LX200Gemini::updateMovementState()
 {
     LX200Gemini::MovementState movementState = getMovementState();
-
-    LOGF_DEBUG("Movement state <%d>", movementState);
 
     switch (movementState)
     {
