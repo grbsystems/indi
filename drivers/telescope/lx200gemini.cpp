@@ -50,7 +50,7 @@
 
 LX200Gemini::LX200Gemini()
 {
-    setVersion(1, 6);
+    setVersion(1, 7);
 
     setLX200Capability(LX200_HAS_SITES | LX200_HAS_PULSE_GUIDING);
 
@@ -133,10 +133,9 @@ bool LX200Gemini::initProperties()
     IUFillSwitch(&TrackModeS[GEMINI_TRACK_LUNAR], "TRACK_LUNAR", "Lunar", ISS_OFF);
     IUFillSwitch(&TrackModeS[GEMINI_TRACK_SOLAR], "TRACK_SOLAR", "Solar", ISS_OFF);
 
-    IUFillSwitch(&SyncDoesAddAlignS[SYNC_DOES_SYNC], "SYNC", "Sync", ISS_ON);
-    IUFillSwitch(&SyncDoesAddAlignS[SYNC_DOES_ADD_ALIGN], "ADDALIGN", "Addl Align", ISS_OFF);
-    IUFillSwitchVector(&SyncDoesAddAlignSP, SyncDoesAddAlignS, 2, getDeviceName(), "SYNC_SETTINGS", "Sync Settings",
-                       MAIN_CONTROL_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
+    IUFillSwitch(&FlipS[0], "FLIP", "Flip", ISS_OFF);
+    IUFillSwitchVector(&FlipSP, FlipS, 1, getDeviceName(), "TELESCOPE_FLIP_MOUNT", "Flip Mount",
+                       MAIN_CONTROL_TAB, IP_RW, ISR_ATMOST1, 60, IPS_IDLE);
 
     return true;
 }
@@ -184,7 +183,7 @@ bool LX200Gemini::updateProperties()
             defineNumber(&CenteringSpeedNP);
         }
 
-        defineSwitch(&SyncDoesAddAlignSP);
+        defineSwitch(&FlipSP);
 
         updateParkingState();
         updateMovementState();
@@ -197,7 +196,7 @@ bool LX200Gemini::updateProperties()
         deleteProperty(MoveSpeedNP.name);
         deleteProperty(GuidingSpeedNP.name);
         deleteProperty(CenteringSpeedNP.name);
-        deleteProperty(SyncDoesAddAlignSP.name);
+        deleteProperty(FlipSP.name);
     }
 
     return true;
@@ -225,11 +224,14 @@ bool LX200Gemini::ISNewSwitch(const char *dev, const char *name, ISState *states
             return true;
         }
 
-        if (!strcmp(name, SyncDoesAddAlignSP.name))
+        if (!strcmp(name, FlipSP.name))
         {
-            IUUpdateSwitch(&SyncDoesAddAlignSP, states, names, n);
-            SyncDoesAddAlignSP.s = IPS_OK;
-            IDSetSwitch(&SyncDoesAddAlignSP, nullptr);
+            IUUpdateSwitch(&FlipSP, states, names, n);
+            FlipSP.s = IPS_OK;
+
+            flipMount();
+
+            IDSetSwitch(&FlipSP, nullptr);
             return true;
         }
     }
@@ -891,6 +893,150 @@ bool LX200Gemini::setGeminiProperty(uint8_t propertyNumber, char* value)
 
     return true;
 }
+
+
+bool LX200Gemini::Goto(double ra, double dec)
+{
+    // Establish if we meet the flip criteria
+    // Must be on the west side of the pier
+    bool isWest = PierSideS[PIER_WEST].s == ISS_ON;
+
+    // Whats the hour angle of the target?
+    auto lst = get_local_sidereal_time(this->LocationN[LOCATION_LONGITUDE].value);
+    auto ha = rangeHA(lst - ra);
+
+    // Don't try to flip too close to the meridian because singularities and
+    // overflows lurk there.  These can expose odd errors in the mount firmware
+    // causing crazy slew behaviour, like trying to point through the earth
+    bool inHourAngle = (ha > 0.08333 && ha < 1.0);
+
+    LOGF_INFO("Pier side is: %s - HA: %-02.2f", isWest ? "West":"East", ha);
+
+    if(isWest && inHourAngle)
+    {
+        GotoWithFlip(ra, dec);
+    }
+
+    return LX200Generic::Goto(ra, dec);
+}
+
+bool LX200Gemini::GotoWithFlip(double ra, double dec)
+{
+    const struct timespec timeout = {0, 100000000L};
+
+    targetRA  = ra;
+    targetDEC = dec;
+    char RAStr[64] = {0}, DecStr[64] = {0};
+    int fracbase = 0;
+
+    switch (getLX200Format())
+    {
+        case LX200_LONGER_FORMAT:
+            fracbase = 360000;
+            break;
+        case LX200_LONG_FORMAT:
+        case LX200_SHORT_FORMAT:
+        default:
+            fracbase = 3600;
+            break;
+    }
+
+    fs_sexa(RAStr, targetRA, 2, fracbase);
+    fs_sexa(DecStr, targetDEC, 2, fracbase);
+
+    // If moving, let's stop it first.
+    if (EqNP.s == IPS_BUSY)
+    {
+        if (!isSimulation() && abortSlew(PortFD) < 0)
+        {
+            AbortSP.s = IPS_ALERT;
+            IDSetSwitch(&AbortSP, "Abort slew failed.");
+            return false;
+        }
+
+        AbortSP.s = IPS_OK;
+        EqNP.s    = IPS_IDLE;
+        IDSetSwitch(&AbortSP, "Slew aborted.");
+        IDSetNumber(&EqNP, nullptr);
+
+        if (MovementNSSP.s == IPS_BUSY || MovementWESP.s == IPS_BUSY)
+        {
+            MovementNSSP.s = MovementWESP.s = IPS_IDLE;
+            EqNP.s                          = IPS_IDLE;
+            IUResetSwitch(&MovementNSSP);
+            IUResetSwitch(&MovementWESP);
+            IDSetSwitch(&MovementNSSP, nullptr);
+            IDSetSwitch(&MovementWESP, nullptr);
+        }
+
+        // sleep for 100 mseconds
+        nanosleep(&timeout, nullptr);
+    }
+
+    if (!isSimulation())
+    {
+        if (setObjectRA(PortFD, targetRA) < 0 || (setObjectDEC(PortFD, targetDEC)) < 0)
+        {
+            EqNP.s = IPS_ALERT;
+            IDSetNumber(&EqNP, "Error setting RA/DEC.");
+            return false;
+        }
+
+        int err = 0;
+
+        /* Slew reads the '0', that is not the end of the slew */
+        if ((err = SlewWithFlip(PortFD)))
+        {
+            LOGF_ERROR("Error Slewing to JNow RA %s - DEC %s", RAStr, DecStr);
+            slewError(err);
+            return false;
+        }
+    }
+
+    TrackState = SCOPE_SLEWING;
+    //EqNP.s     = IPS_BUSY;
+
+    LOGF_INFO("Slewing with flip to RA: %s - DEC: %s", RAStr, DecStr);
+
+    return true;
+}
+
+int LX200Gemini::SlewWithFlip(int fd)
+{
+    char slewNum[2];
+    int error_type;
+    int nbytes_write = 0, nbytes_read = 0;
+
+
+    if ((error_type = tty_write_string(fd, ":MM#", &nbytes_write)) != TTY_OK)
+        return error_type;
+
+    error_type = tty_read(fd, slewNum, 1, GEMINI_TIMEOUT, &nbytes_read);
+
+    if (nbytes_read < 1)
+    {
+        LOGF_ERROR("RES ERROR <%d>", error_type);
+        return error_type;
+    }
+
+    /* We don't need to read the string message, just return corresponding error code */
+    tcflush(fd, TCIFLUSH);
+
+    LOGF_DEBUG("RES <%c>", slewNum[0]);
+
+    error_type = slewNum[0] - '0';
+    if ((error_type >= 0) && (error_type <= 9)) {
+        return error_type;
+    } else {
+        return -1;
+    }
+}
+
+bool LX200Gemini::flipMount()
+{
+    return Goto(currentRA, currentDEC);
+}
+
 
 bool LX200Gemini::SetTrackMode(uint8_t mode)
 {

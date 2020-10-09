@@ -52,6 +52,11 @@ class LX200Gemini : public LX200Generic
         virtual bool Park()override ;
         virtual bool UnPark() override;
 
+        // Goto
+        virtual bool Goto(double ra, double dec) override;
+        virtual bool GotoWithFlip(double ra, double dec);
+        virtual int SlewWithFlip(int fd);
+
         virtual bool SetTrackMode(uint8_t mode) override;
         virtual bool SetTrackEnabled(bool enabled) override;
 
@@ -65,13 +70,17 @@ class LX200Gemini : public LX200Generic
         bool sleepMount();
         bool wakeupMount();
 
-        int AddAlign(int fd);
-
         bool getGeminiProperty(uint8_t propertyNumber, char* value);
         bool setGeminiProperty(uint8_t propertyNumber, char* value);
 
+        bool flipMount();
+
         // Checksum for private commands
         uint8_t calculateChecksum(char *cmd);
+
+        // Abort motion
+        ISwitchVectorProperty FlipSP;
+        ISwitch FlipS[1];
 
         INumber ManualSlewingSpeedN[1];
         INumberVectorProperty ManualSlewingSpeedNP;
@@ -95,14 +104,6 @@ class LX200Gemini : public LX200Generic
             PARK_HOME,
             PARK_STARTUP,
             PARK_ZENITH
-        };
-
-        ISwitch SyncDoesAddAlignS[2];
-        ISwitchVectorProperty SyncDoesAddAlignSP;
-        enum
-        {
-            SYNC_DOES_SYNC,
-            SYNC_DOES_ADD_ALIGN
         };
 
         ISwitch StartupModeS[3];
